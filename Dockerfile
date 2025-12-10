@@ -21,7 +21,8 @@ COPY . /app/serverless/
 
 RUN pip install --no-cache-dir \
     runpod==1.6.0 \
-    faster-whisper==1.2.1 \
+    ctranslate2==4.5.0 \
+    faster-whisper==1.1.0 \
     requests==2.32.3
 
 # Pre-download the Turbo weights into the image cache to avoid cold start fetches.
