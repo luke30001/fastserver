@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1
 
-# GPU base image with CUDA + cuDNN runtime
-FROM pytorch/pytorch:2.3.0-cuda12.1-cudnn8-runtime
+# GPU base image with CUDA 12.4 + cuDNN runtime (compatible with RunPod CUDA 12.9)
+FROM pytorch/pytorch:2.5.1-cuda12.4-cudnn9-runtime
 
 # Use /app/models for baked-in model (won't be shadowed by RunPod volume mounts)
 ENV PYTHONDONTWRITEBYTECODE=1 \

@@ -38,7 +38,11 @@ def load_model() -> WhisperModel:
                 local_files_only=require_cached,
             )
         except Exception as exc:
-            if require_cached:
+            exc_str = str(exc).lower()
+            # Don't mask CUDA/GPU errors as cache errors
+            if "cuda" in exc_str or "gpu" in exc_str or "device" in exc_str:
+                raise
+            if require_cached and "local" in exc_str:
                 raise RuntimeError(
                     f"Model must be cached at {download_root}; "
                     f"set WHISPER_REQUIRE_CACHED=0 to allow downloading."
