@@ -1,0 +1,7 @@
+{
+  "input": {
+    "file_url": "https://example.com/audio.m4a",
+    "language": "en",
+    "beam_size": 5
+  }
+}
