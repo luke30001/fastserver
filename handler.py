@@ -25,11 +25,24 @@ _model: Optional[WhisperModel] = None
 def load_model() -> WhisperModel:
     global _model
     if _model is None:
-        _model = WhisperModel(
-            DEFAULT_MODEL_SIZE,
-            device=DEFAULT_DEVICE,
-            compute_type=DEFAULT_COMPUTE_TYPE,
-        )
+        download_root = os.environ.get("HF_HOME", "/cache/hf")
+        require_cached = os.environ.get("WHISPER_REQUIRE_CACHED", "1") == "1"
+        try:
+            _model = WhisperModel(
+                DEFAULT_MODEL_SIZE,
+                device=DEFAULT_DEVICE,
+                compute_type=DEFAULT_COMPUTE_TYPE,
+                download_root=download_root,
+                local_files_only=require_cached,
+            )
+        except Exception as exc:
+            if require_cached:
+                raise RuntimeError(
+                    f"Turbo model must be cached at {download_root}; "
+                    f"either mount the volume or set WHISPER_REQUIRE_CACHED=0 "
+                    f"to allow downloading."
+                ) from exc
+            raise
     return _model
 
 
@@ -52,29 +65,52 @@ def _write_temp_audio_from_url(url: str, suffix: str = ".audio") -> str:
 
 def _extract_audio_to_file(event: Dict[str, Any]) -> str:
     """
-    Accepts:
+    Accepts multiple input formats:
     - event["files"]["file"]["content"]: base64 payload (RunPod UI multipart)
-    - event["input"]["file"]: same as above
-    - event["input"]["file_url"]: http(s) URL to fetch
+    - event["input"]["file"]: base64 string
+    - event["input"]["file_url"] or event["input"]["audio_url"]: http(s) URL to fetch
+    - event["file"]: base64 string (direct)
+    - event["file_url"] or event["audio_url"]: http(s) URL (direct)
     """
+    # Try RunPod UI multipart format first
     files = event.get("files") or {}
+    if isinstance(files, dict):
+        file_entry = files.get("file")
+        if isinstance(file_entry, dict):
+            file_b64 = file_entry.get("content")
+            if file_b64:
+                return _write_temp_audio_from_base64(file_b64)
+
+    # Try input payload
     input_payload = event.get("input") or {}
-
-    file_entry = files.get("file") if isinstance(files, dict) else None
-    file_b64 = None
-    if isinstance(file_entry, dict):
-        file_b64 = file_entry.get("content")
-    if not file_b64:
+    if isinstance(input_payload, dict):
         file_b64 = input_payload.get("file")
+        if file_b64:
+            return _write_temp_audio_from_base64(file_b64)
+        
+        # Accept both "file_url" and "audio_url" for flexibility
+        file_url = input_payload.get("file_url") or input_payload.get("audio_url")
+        if file_url:
+            return _write_temp_audio_from_url(file_url)
 
-    if file_b64:
-        return _write_temp_audio_from_base64(file_b64)
-
-    file_url = input_payload.get("file_url")
+    # Try direct event fields
+    if "file" in event:
+        file_b64 = event.get("file")
+        if file_b64:
+            return _write_temp_audio_from_base64(file_b64)
+    
+    # Accept both "file_url" and "audio_url" for flexibility
+    file_url = event.get("file_url") or event.get("audio_url")
     if file_url:
         return _write_temp_audio_from_url(file_url)
 
-    raise ValueError("No audio provided. Send 'file' (base64) or 'file_url'.")
+    # Provide helpful error message with what was actually received
+    available_keys = list(event.keys())
+    raise ValueError(
+        f"No audio provided. Send 'file' (base64) or 'file_url'. "
+        f"Received event keys: {available_keys}. "
+        f"Event structure: {str(event)[:500]}"
+    )
 
 
 def run(event: Dict[str, Any]) -> Dict[str, Any]:
@@ -85,11 +121,13 @@ def run(event: Dict[str, Any]) -> Dict[str, Any]:
     input_payload = event.get("input") or {}
     language = input_payload.get("language", DEFAULT_LANGUAGE) or None
     beam_size = int(input_payload.get("beam_size", DEFAULT_BEAM_SIZE))
+    condition_on_previous_text = input_payload.get("condition_on_previous_text", False)
 
     segments, info = model.transcribe(
         audio_path,
         beam_size=beam_size,
         language=language,
+        condition_on_previous_text=condition_on_previous_text,
     )
 
     result_segments = [
