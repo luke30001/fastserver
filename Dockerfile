@@ -7,7 +7,8 @@ FROM pytorch/pytorch:2.3.0-cuda12.1-cudnn8-runtime
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     HF_HOME=/app/models \
-    XDG_CACHE_HOME=/app/models
+    XDG_CACHE_HOME=/app/models \
+    HUGGINGFACE_HUB_CACHE=/app/models
 
 RUN apt-get update && \
     apt-get install -y --no-install-recommends ffmpeg && \
