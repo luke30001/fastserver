@@ -1,169 +1,110 @@
 import base64
-import logging
 import os
 import tempfile
-from pathlib import Path
 from typing import Any, Dict, Optional
 
 import requests
 import runpod
 from faster_whisper import WhisperModel
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
-logger = logging.getLogger("runpod-fasterwhisper")
 
-MODEL_SIZE = os.getenv("MODEL_SIZE", "medium")
-COMPUTE_TYPE = os.getenv("COMPUTE_TYPE", "float16")
-VAD_FILTER = os.getenv("VAD_FILTER", "true").lower() == "true"
+# Defaults tuned for CPU-only RunPod serverless
+DEFAULT_MODEL_SIZE = os.environ.get("WHISPER_MODEL_SIZE", "turbo")
+DEFAULT_COMPUTE_TYPE = os.environ.get("WHISPER_COMPUTE_TYPE", "int8")
+DEFAULT_BEAM_SIZE = int(os.environ.get("WHISPER_BEAM_SIZE", "5"))
+DEFAULT_LANGUAGE = os.environ.get("WHISPER_LANGUAGE", "")  # empty -> auto-detect
+
+# Set cache dirs so model weights persist across warm starts when a volume is attached.
+os.environ.setdefault("HF_HOME", "/cache/hf")
+os.environ.setdefault("XDG_CACHE_HOME", "/cache")
+
+_model: Optional[WhisperModel] = None
 
 
 def load_model() -> WhisperModel:
-    """
-    Load the Whisper model once at cold start.
-    """
-
-    device = "cuda"
-    compute_type = COMPUTE_TYPE
-
-    logger.info("Loading Whisper model %s (device=%s, compute_type=%s)", MODEL_SIZE, device, compute_type)
-
-    try:
-        model = WhisperModel(
-            MODEL_SIZE,
-            device=device,
-            compute_type=compute_type,
+    global _model
+    if _model is None:
+        _model = WhisperModel(
+            DEFAULT_MODEL_SIZE,
+            device="cpu",
+            compute_type=DEFAULT_COMPUTE_TYPE,
         )
-    except ValueError as exc:
-        # Fallback if the requested compute type is not supported by the backend.
-        if "float16" in str(exc).lower():
-            fallback_type = "int8_float16"
-            logger.warning(
-                "Requested compute_type=%s not supported on device=%s; retrying with %s",
-                compute_type,
-                device,
-                fallback_type,
-            )
-            model = WhisperModel(
-                MODEL_SIZE,
-                device=device,
-                compute_type=fallback_type,
-            )
-        else:
-            raise
-
-    return model
+    return _model
 
 
-model = load_model()
+def _write_temp_audio_from_base64(content_b64: str, suffix: str = ".audio") -> str:
+    data = base64.b64decode(content_b64)
+    fd, path = tempfile.mkstemp(suffix=suffix)
+    with os.fdopen(fd, "wb") as f:
+        f.write(data)
+    return path
 
 
-def _download_to_temp(url: str, suffix: str = ".mp3") -> str:
+def _write_temp_audio_from_url(url: str, suffix: str = ".audio") -> str:
+    resp = requests.get(url, timeout=30)
+    resp.raise_for_status()
+    fd, path = tempfile.mkstemp(suffix=suffix)
+    with os.fdopen(fd, "wb") as f:
+        f.write(resp.content)
+    return path
+
+
+def _extract_audio_to_file(event: Dict[str, Any]) -> str:
     """
-    Download a remote audio file to a temporary path.
+    Accepts:
+    - event["files"]["file"]["content"]: base64 payload (RunPod UI multipart)
+    - event["input"]["file"]: same as above
+    - event["input"]["file_url"]: http(s) URL to fetch
     """
-    response = requests.get(url, timeout=60)
-    response.raise_for_status()
+    files = event.get("files") or {}
+    input_payload = event.get("input") or {}
 
-    with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
-        tmp.write(response.content)
-        return tmp.name
+    file_entry = files.get("file") if isinstance(files, dict) else None
+    file_b64 = None
+    if isinstance(file_entry, dict):
+        file_b64 = file_entry.get("content")
+    if not file_b64:
+        file_b64 = input_payload.get("file")
 
+    if file_b64:
+        return _write_temp_audio_from_base64(file_b64)
 
-def _decode_base64_audio(b64_audio: str, suffix: str = ".wav") -> str:
-    """
-    Decode base64 audio into a temporary file.
-    """
-    with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
-        tmp.write(base64.b64decode(b64_audio))
-        return tmp.name
+    file_url = input_payload.get("file_url")
+    if file_url:
+        return _write_temp_audio_from_url(file_url)
 
-
-def _resolve_audio_source(event_input: Dict[str, Any]) -> str:
-    """
-    Accept either audio_url or audio_base64 and return a temp file path.
-    """
-    if "audio_url" in event_input:
-        return _download_to_temp(event_input["audio_url"])
-
-    if "audio_base64" in event_input:
-        return _decode_base64_audio(event_input["audio_base64"])
-
-    raise ValueError("Provide either `audio_url` or `audio_base64` in input.")
+    raise ValueError("No audio provided. Send 'file' (base64) or 'file_url'.")
 
 
-def _transcribe(audio_path: str, opts: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Run transcription and return structured results.
-    """
-    task = "translate" if opts.get("translate", False) else "transcribe"
-    language = opts.get("language")
-    beam_size = opts.get("beam_size", 5)
-    vad_filter = opts.get("vad_filter", VAD_FILTER)
-    chunk_length = opts.get("chunk_length_s", 30)
+def run(event: Dict[str, Any]) -> Dict[str, Any]:
+    audio_path = _extract_audio_to_file(event)
+    model = load_model()
 
-    segments_out = []
-
-    logger.info(
-        "Starting %s (language=%s, beam_size=%s, vad_filter=%s)",
-        task,
-        language,
-        beam_size,
-        vad_filter,
-    )
+    # Allow per-request overrides
+    input_payload = event.get("input") or {}
+    language = input_payload.get("language", DEFAULT_LANGUAGE) or None
+    beam_size = int(input_payload.get("beam_size", DEFAULT_BEAM_SIZE))
 
     segments, info = model.transcribe(
         audio_path,
-        language=language,
         beam_size=beam_size,
-        task=task,
-        vad_filter=vad_filter,
-        chunk_length=chunk_length,
-        log_prob_threshold=opts.get("log_prob_threshold"),
-        no_speech_threshold=opts.get("no_speech_threshold", 0.6),
+        language=language,
     )
 
-    for seg in segments:
-        segments_out.append(
-            {
-                "id": seg.id,
-                "start": seg.start,
-                "end": seg.end,
-                "text": seg.text,
-                "avg_logprob": seg.avg_logprob,
-                "no_speech_prob": seg.no_speech_prob,
-                "temperature": seg.temperature,
-            }
-        )
+    result_segments = [
+        {
+            "start": segment.start,
+            "end": segment.end,
+            "text": segment.text,
+        }
+        for segment in segments
+    ]
 
     return {
-        "task": task,
         "language": info.language,
-        "duration": info.duration,
-        "transcription": segments_out,
+        "language_probability": info.language_probability,
+        "segments": result_segments,
     }
 
 
-def handler(event: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    RunPod serverless entrypoint.
-    """
-    audio_path: Optional[str] = None
-    try:
-        event_input = event.get("input", {})
-        audio_path = _resolve_audio_source(event_input)
-
-        result = _transcribe(audio_path, event_input)
-        return {"status": "ok", "result": result}
-    except Exception as exc:  # pylint: disable=broad-except
-        logger.exception("Transcription failed")
-        return {"status": "error", "message": str(exc)}
-    finally:
-        # Clean up temp file, if any
-        if audio_path and Path(audio_path).exists():
-            try:
-                Path(audio_path).unlink()
-            except OSError:
-                pass
-
-
-runpod.serverless.start({"handler": handler})
+runpod.serverless.start({"handler": run})
