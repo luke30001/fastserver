@@ -15,9 +15,10 @@ DEFAULT_DEVICE = os.environ.get("WHISPER_DEVICE", "cuda")
 DEFAULT_BEAM_SIZE = int(os.environ.get("WHISPER_BEAM_SIZE", "5"))
 DEFAULT_LANGUAGE = os.environ.get("WHISPER_LANGUAGE", "")  # empty -> auto-detect
 
-# Set cache dirs so model weights persist across warm starts when a volume is attached.
-os.environ.setdefault("HF_HOME", "/cache/hf")
-os.environ.setdefault("XDG_CACHE_HOME", "/cache")
+# Set cache dirs - use /app/models which is baked into the image
+# (RunPod may mount volumes at /cache, shadowing baked-in files)
+os.environ.setdefault("HF_HOME", "/app/models")
+os.environ.setdefault("XDG_CACHE_HOME", "/app/models")
 
 _model: Optional[WhisperModel] = None
 
@@ -25,7 +26,7 @@ _model: Optional[WhisperModel] = None
 def load_model() -> WhisperModel:
     global _model
     if _model is None:
-        download_root = os.environ.get("HF_HOME", "/cache/hf")
+        download_root = os.environ.get("HF_HOME", "/app/models")
         require_cached = os.environ.get("WHISPER_REQUIRE_CACHED", "1") == "1"
         try:
             _model = WhisperModel(
@@ -38,9 +39,8 @@ def load_model() -> WhisperModel:
         except Exception as exc:
             if require_cached:
                 raise RuntimeError(
-                    f"Turbo model must be cached at {download_root}; "
-                    f"either mount the volume or set WHISPER_REQUIRE_CACHED=0 "
-                    f"to allow downloading."
+                    f"Model must be cached at {download_root}; "
+                    f"set WHISPER_REQUIRE_CACHED=0 to allow downloading."
                 ) from exc
             raise
     return _model
