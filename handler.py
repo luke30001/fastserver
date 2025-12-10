@@ -8,9 +8,10 @@ import runpod
 from faster_whisper import WhisperModel
 
 
-# Defaults tuned for CPU-only RunPod serverless
+# Defaults tuned for GPU RunPod serverless with preinstalled Turbo model
 DEFAULT_MODEL_SIZE = os.environ.get("WHISPER_MODEL_SIZE", "turbo")
-DEFAULT_COMPUTE_TYPE = os.environ.get("WHISPER_COMPUTE_TYPE", "int8")
+DEFAULT_COMPUTE_TYPE = os.environ.get("WHISPER_COMPUTE_TYPE", "float16")
+DEFAULT_DEVICE = os.environ.get("WHISPER_DEVICE", "cuda")
 DEFAULT_BEAM_SIZE = int(os.environ.get("WHISPER_BEAM_SIZE", "5"))
 DEFAULT_LANGUAGE = os.environ.get("WHISPER_LANGUAGE", "")  # empty -> auto-detect
 
@@ -26,7 +27,7 @@ def load_model() -> WhisperModel:
     if _model is None:
         _model = WhisperModel(
             DEFAULT_MODEL_SIZE,
-            device="cpu",
+            device=DEFAULT_DEVICE,
             compute_type=DEFAULT_COMPUTE_TYPE,
         )
     return _model
