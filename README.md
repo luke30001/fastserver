@@ -30,7 +30,7 @@
 
 ## Build & run locally
 ```bash
-docker build -t whisper-runpod -f serverless/Dockerfile .
+docker build -t whisper-runpod .
 docker run -p 8080:8080 whisper-runpod
 ```
 Then test with `rp_tester`:

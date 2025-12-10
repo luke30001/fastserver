@@ -14,7 +14,8 @@ RUN apt-get update && \
 
 WORKDIR /app
 
-COPY serverless/ /app/serverless/
+# Copy the current directory contents (handler + dependencies) into the image.
+COPY . /app/serverless/
 
 RUN pip install --no-cache-dir \
     runpod==1.6.0 \
