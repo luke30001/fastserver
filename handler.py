@@ -21,12 +21,40 @@ def load_model() -> WhisperModel:
     """
     Load the Whisper model once at cold start.
     """
-    logger.info("Loading Whisper model %s (compute_type=%s)", MODEL_SIZE, COMPUTE_TYPE)
-    model = WhisperModel(
-        MODEL_SIZE,
-        device="cuda" if os.getenv("CUDA_VISIBLE_DEVICES") else "cpu",
-        compute_type=COMPUTE_TYPE,
-    )
+    device = "cuda" if os.getenv("CUDA_VISIBLE_DEVICES") else "cpu"
+    compute_type = COMPUTE_TYPE
+
+    # float16 is unsupported on CPU-only builds; fall back to int8 to avoid init errors.
+    if device == "cpu" and compute_type == "float16":
+        logger.warning("CPU backend detected; downgrading compute_type to int8")
+        compute_type = "int8"
+
+    logger.info("Loading Whisper model %s (device=%s, compute_type=%s)", MODEL_SIZE, device, compute_type)
+
+    try:
+        model = WhisperModel(
+            MODEL_SIZE,
+            device=device,
+            compute_type=compute_type,
+        )
+    except ValueError as exc:
+        # Fallback if the requested compute type is not supported by the backend.
+        if "float16" in str(exc).lower():
+            fallback_type = "int8" if device == "cpu" else "int8_float16"
+            logger.warning(
+                "Requested compute_type=%s not supported on device=%s; retrying with %s",
+                compute_type,
+                device,
+                fallback_type,
+            )
+            model = WhisperModel(
+                MODEL_SIZE,
+                device=device,
+                compute_type=fallback_type,
+            )
+        else:
+            raise
+
     return model
 
 
