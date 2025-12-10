@@ -24,14 +24,22 @@ RUN pip install --no-cache-dir \
     requests==2.32.3
 
 # Pre-download the Turbo weights into the image cache to avoid cold start fetches.
-RUN python - <<'PY'
+# Create the models directory first to ensure it exists
+# Cache bust: v2
+RUN mkdir -p /app/models && python - <<'PY'
 import os
+os.environ["HF_HOME"] = "/app/models"
+os.environ["XDG_CACHE_HOME"] = "/app/models"
+os.environ["HUGGINGFACE_HUB_CACHE"] = "/app/models"
 from faster_whisper import WhisperModel
-os.environ.setdefault("HF_HOME", "/app/models")
-os.environ.setdefault("XDG_CACHE_HOME", "/app/models")
 # Use CPU for download; runtime will use CUDA.
-WhisperModel("turbo", device="cpu", compute_type="int8")
+# Explicitly set download_root to match runtime handler
+model = WhisperModel("turbo", device="cpu", compute_type="int8", download_root="/app/models")
 print("Turbo model cached.")
+# Verify the cache location
+import subprocess
+subprocess.run(["ls", "-la", "/app/models"], check=True)
+subprocess.run(["find", "/app/models", "-type", "d"], check=True)
 PY
 
 CMD ["python", "-u", "serverless/handler.py"]

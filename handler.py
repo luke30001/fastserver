@@ -19,6 +19,7 @@ DEFAULT_LANGUAGE = os.environ.get("WHISPER_LANGUAGE", "")  # empty -> auto-detec
 # (RunPod may mount volumes at /cache, shadowing baked-in files)
 os.environ.setdefault("HF_HOME", "/app/models")
 os.environ.setdefault("XDG_CACHE_HOME", "/app/models")
+os.environ.setdefault("HUGGINGFACE_HUB_CACHE", "/app/models")
 
 _model: Optional[WhisperModel] = None
 
